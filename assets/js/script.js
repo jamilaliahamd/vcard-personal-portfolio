@@ -47,10 +47,64 @@ const storeKey = 'voltwise-clean-data-v1';
 const ADMIN_EMAIL = 'Arkan.al.omda@gmail.com';
 const ADMIN_PASSWORD = 'jamil03000';
 let adminLoggedIn = false;
+let cloudDatabase = null;
+let cloudSyncEnabled = false;
+let cloudWriteTimer = null;
+let applyingCloudData = false;
+let cloudBaseline = null;
 const emptyDatabase = {customers:[],workers:[],projects:[],tasks:[],materials:[],quotations:[],expenses:[],payments:[],invoices:[]};
 let db = JSON.parse(localStorage.getItem(storeKey) || 'null') || JSON.parse(JSON.stringify(seed));
 db.materials.forEach(material=>{material.sellingPrice=Number(material.sellingPrice ?? material.price);material.price=material.sellingPrice;if(material.marketPrice!==null&&material.marketPrice!==undefined&&material.marketPrice!=='')material.marketPrice=Number(material.marketPrice);else material.marketPrice=null;});
-const save = () => localStorage.setItem(storeKey, JSON.stringify(db));
+const setSyncStatus = (message, state='offline') => { const status = byId('syncStatus'); if(status){ status.textContent = message; status.dataset.state = state; } };
+const cloneData = value => JSON.parse(JSON.stringify(value));
+const sameData = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+function mergeConcurrentData(remoteData, localData, baseline){
+  const merged = {...cloneData(emptyDatabase), ...cloneData(remoteData || {})};
+  Object.keys(emptyDatabase).forEach(collection => {
+    const remoteRecords = Array.isArray(remoteData?.[collection]) ? remoteData[collection] : [];
+    const localRecords = Array.isArray(localData?.[collection]) ? localData[collection] : [];
+    const baselineRecords = Array.isArray(baseline?.[collection]) ? baseline[collection] : [];
+    const localById = new Map(localRecords.filter(record => record?.id).map(record => [record.id, record]));
+    const baselineById = new Map(baselineRecords.filter(record => record?.id).map(record => [record.id, record]));
+    const remoteById = new Map(remoteRecords.filter(record => record?.id).map(record => [record.id, record]));
+    const localChangedIds = new Set();
+    localById.forEach((record, id) => { if (!sameData(record, baselineById.get(id))) localChangedIds.add(id); });
+    baselineById.forEach((record, id) => { if (!localById.has(id)) localChangedIds.add(id); });
+    localChangedIds.forEach(id => { if (localById.has(id)) remoteById.set(id, cloneData(localById.get(id))); else remoteById.delete(id); });
+    merged[collection] = [...remoteById.values()];
+  });
+  return merged;
+}
+const save = () => {
+  localStorage.setItem(storeKey, JSON.stringify(db));
+  if (!cloudSyncEnabled || applyingCloudData || !cloudDatabase) return;
+  clearTimeout(cloudWriteTimer);
+  cloudWriteTimer = setTimeout(() => cloudDatabase.transaction(remoteData => mergeConcurrentData(remoteData, db, cloudBaseline)).then(() => setSyncStatus('Live sync connected', 'online')).catch(() => setSyncStatus('Sync error', 'error')), 250);
+};
+function connectCloudSync(){
+  const config = window.VOLTWISE_FIREBASE_CONFIG || {};
+  if (!config.apiKey || !config.authDomain || !config.databaseURL || !config.projectId || !config.appId || !window.firebase) { setSyncStatus('Local device only', 'offline'); return; }
+  setSyncStatus('Connecting...', 'connecting');
+  try {
+    if (!firebase.apps.length) firebase.initializeApp(config);
+    cloudDatabase = firebase.database().ref(storeKey);
+    firebase.auth().signInAnonymously().then(() => {
+      cloudSyncEnabled = true;
+      setSyncStatus('Live sync connected', 'online');
+      cloudDatabase.on('value', snapshot => {
+        const remoteData = snapshot.val();
+        if (!remoteData || typeof remoteData !== 'object') { save(); return; }
+        applyingCloudData = true;
+        cloudBaseline = cloneData(remoteData);
+        db = {...cloneData(emptyDatabase), ...remoteData};
+        localStorage.setItem(storeKey, JSON.stringify(db));
+        sanitizeStoredData();
+        refresh();
+        applyingCloudData = false;
+      });
+    }).catch(() => setSyncStatus('Sync unavailable', 'error'));
+  } catch (error) { setSyncStatus('Sync unavailable', 'error'); }
+}
 const cleanText = (value, fallback='') => {
   const text = String(value ?? '').trim();
   return text || fallback;
@@ -725,6 +779,7 @@ byId('chatClose')?.addEventListener('click',()=>{byId('chatWindow')?.setAttribut
 byId('chatForm')?.addEventListener('submit',event=>{event.preventDefault();const input=byId('chatInput');sendChatQuestion(input?.value);if(input)input.value='';});
 document.querySelectorAll('[data-chat-prompt]').forEach(button=>button.addEventListener('click',()=>sendChatQuestion(button.dataset.chatPrompt)));
 setAuthMode('signin');
+connectCloudSync();
 
 byId('printProjects')?.addEventListener('click',event=>{event.stopImmediatePropagation();printProjectsReport();},true);
 byId('printReport')?.addEventListener('click',event=>{event.preventDefault();event.stopImmediatePropagation();printSelectedProjectReport();},true);
