@@ -101,9 +101,13 @@ function connectCloudSync(){
         sanitizeStoredData();
         refresh();
         applyingCloudData = false;
+      }, error => {
+        setSyncStatus(error?.code === 'PERMISSION_DENIED' ? 'Enable database rules' : 'Database unavailable', 'error');
       });
-    }).catch(() => setSyncStatus('Sync unavailable', 'error'));
-  } catch (error) { setSyncStatus('Sync unavailable', 'error'); }
+    }).catch(error => {
+      setSyncStatus(error?.code === 'auth/operation-not-allowed' ? 'Enable Anonymous Auth' : 'Firebase login failed', 'error');
+    });
+  } catch (error) { setSyncStatus('Firebase unavailable', 'error'); }
 }
 const cleanText = (value, fallback='') => {
   const text = String(value ?? '').trim();
